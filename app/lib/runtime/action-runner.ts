@@ -73,6 +73,9 @@ export class ActionRunner {
   onSupabaseAlert?: (alert: SupabaseAlert) => void;
   onDeployAlert?: (alert: DeployAlert) => void;
   buildOutput?: { path: string; exitCode: number; output: string };
+  
+  // Novo mapa para rastrear ações de arquivo por caminho
+  #fileActions: Map<string, { actionId: string; timestamp: number; complete: boolean }> = new Map();
 
   constructor(
     webcontainerPromise: Promise<WebContainer>,
@@ -299,6 +302,46 @@ export class ActionRunner {
     return resp;
   }
 
+  // Método para verificar se uma ação é continuação de outra
+  #isFileContinuation(filePath: string, actionId: string, content: string): { isContinuation: boolean; previousActionId?: string } {
+    const prevAction = this.#fileActions.get(filePath);
+    
+    // Verificar se existe uma ação recente para o mesmo arquivo
+    if (prevAction && prevAction.actionId !== actionId) {
+      // Verificar tempo - se for dentro de um período razoável (30 segundos)
+      const timeSinceLastAction = Date.now() - prevAction.timestamp;
+      const isRecentAction = timeSinceLastAction < 30000; // 30 segundos
+      
+      // Se a ação anterior não estiver marcada como completa, é provavelmente uma continuação
+      if (!prevAction.complete && isRecentAction) {
+        logger.info(`Detected continuation for file ${filePath} from action ${prevAction.actionId}`);
+        return { isContinuation: true, previousActionId: prevAction.actionId };
+      }
+      
+      // Também verificar conteúdo para casos especiais
+      if (content.includes('AVISO: Este arquivo foi gerado de forma incompleta') || 
+          content.trim().startsWith('*/') || 
+          (!content.includes('import') && !content.includes('class') && !content.includes('function'))) {
+        // Parece um fragmento de código, provavelmente é uma continuação
+        logger.info(`Detected possible continuation for file ${filePath} based on content`);
+        return { isContinuation: true, previousActionId: prevAction.actionId };
+      }
+    }
+    
+    return { isContinuation: false };
+  }
+
+  // Registrar ação de arquivo no mapa de rastreamento
+  #registerFileAction(filePath: string, actionId: string, isComplete: boolean) {
+    this.#fileActions.set(filePath, {
+      actionId,
+      timestamp: Date.now(),
+      complete: isComplete
+    });
+    
+    logger.debug(`Registered file action: ${filePath}, actionId: ${actionId}, complete: ${isComplete}`);
+  }
+
   async #runFileAction(action: ActionState) {
     if (action.type !== 'file') {
       unreachable('Expected file action');
@@ -322,39 +365,79 @@ export class ActionRunner {
     }
 
     try {
+      // Verificar se este arquivo é continuação de um anterior
+      const { isContinuation, previousActionId } = this.#isFileContinuation(
+        relativePath,
+        // Use o actionId presente no Map de ações em vez de action.id
+        Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '',
+        action.content
+      );
+      
       // Verificar se o arquivo já existe
       let existingContent = '';
+      let fileExists = false;
+      
       try {
         existingContent = await webcontainer.fs.readFile(relativePath, 'utf-8');
-        logger.debug(`File ${relativePath} exists, checking if continuation`);
+        fileExists = true;
+        logger.debug(`File ${relativePath} exists, content length: ${existingContent.length} chars`);
       } catch (error) {
-        // Arquivo não existe ainda, não precisa fazer nada especial
         logger.debug(`File ${relativePath} does not exist yet, creating new`);
       }
 
-      // Se o arquivo já existir e tiver conteúdo, é uma possível continuação
-      if (existingContent && action.content) {
-        // Verificar se é uma continuação (em caso de fragmentação devido a limite de tokens)
-        if (existingContent.endsWith('*/\n') || 
-            action.content.includes('AVISO: Este arquivo foi gerado de forma incompleta')) {
-          // É uma continuação, remover o aviso do arquivo anterior se existir
-          const cleanedContent = existingContent.replace(/\/\* AVISO: Este arquivo foi gerado de forma incompleta.*\*\/\n?/g, '');
-          
-          // Escrever o conteúdo mesclado
-          await webcontainer.fs.writeFile(relativePath, cleanedContent + action.content);
-          logger.info(`File continued/appended ${relativePath}`);
+      // Determine o comportamento baseado no status do arquivo
+      if (fileExists && isContinuation) {
+        // É uma continuação confirmada de um arquivo existente
+        logger.info(`Processing continuation for file ${relativePath}, previousAction: ${previousActionId}`);
+        
+        // Remover qualquer aviso de arquivo incompleto se existir
+        const cleanedContent = existingContent.replace(/\/\* AVISO: Este arquivo foi gerado de forma incompleta.*\*\/\n?/g, '');
+        
+        // Verificar se precisamos juntar com uma quebra de linha
+        let mergedContent;
+        if (cleanedContent.endsWith('\n') || action.content.startsWith('\n')) {
+          mergedContent = cleanedContent + action.content;
         } else {
-          // Não é uma continuação, sobrescrever normalmente
-          await webcontainer.fs.writeFile(relativePath, action.content);
-          logger.debug(`File overwritten ${relativePath}`);
+          mergedContent = cleanedContent + '\n' + action.content;
         }
-      } else {
-        // Arquivo não existe ou está vazio, escrever normalmente
+        
+        // Escrever o conteúdo mesclado
+        await webcontainer.fs.writeFile(relativePath, mergedContent);
+        logger.info(`Successfully appended continuation to ${relativePath}, content now ${mergedContent.length} chars`);
+        
+      // Verificar se este parece ser o conteúdo final do arquivo
+      const isComplete = !action.content.includes('AVISO') && 
+                        !action.content.includes('/* SERÁ CONTINUADO */') &&
+                        action.content.includes('}') || 
+                        action.content.includes('</');
+      
+      // Encontrar o actionId nos mapas de ações
+      const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
+                        
+      this.#registerFileAction(relativePath, actionId, isComplete);
+      } else if (fileExists) {
+        // Arquivo existe, mas não é uma continuação - sobrescrever
         await webcontainer.fs.writeFile(relativePath, action.content);
-        logger.debug(`File written ${relativePath}`);
+        logger.debug(`File overwritten ${relativePath}`);
+        
+        // Encontrar o actionId nos mapas de ações
+        const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
+        this.#registerFileAction(relativePath, actionId, true);
+      } else {
+        // Arquivo novo - criar normalmente
+        await webcontainer.fs.writeFile(relativePath, action.content);
+        logger.debug(`File created ${relativePath}`);
+        
+        // Determinar se o arquivo está provavelmente completo
+        const isComplete = !action.content.includes('AVISO') && 
+                           !action.content.includes('/* SERÁ CONTINUADO */');
+        
+        // Encontrar o actionId nos mapas de ações
+        const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
+        this.#registerFileAction(relativePath, actionId, isComplete);
       }
     } catch (error) {
-      logger.error('Failed to write file\n\n', error);
+      logger.error(`Failed to process file ${relativePath}: ${error}`);
     }
   }
 

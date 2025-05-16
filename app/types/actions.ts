@@ -9,6 +9,9 @@ export interface BaseAction {
 export interface FileAction extends BaseAction {
   type: 'file';
   filePath: string;
+  isContinuation?: boolean;     // Indica se esta ação é uma continuação de um arquivo anterior
+  continuationOf?: string;      // ID da ação anterior que este arquivo continua
+  partialFile?: boolean;        // Indica se o arquivo está parcialmente completo
 }
 
 export interface ShellAction extends BaseAction {
