@@ -76,6 +76,18 @@ export class StreamingMessageParser {
   parse(messageId: string, input: string) {
     let state = this.#messages.get(messageId);
 
+    // Detecta se é uma nova resposta no meio de um contexto pendente
+    if (state && (state.insideAction || state.insideArtifact)) {
+      const newConversationStart = this.#detectNewConversationStart(input);
+      if (newConversationStart) {
+        // Fecha forçadamente qualquer tag aberta
+        this.#forciblyCloseOpenTags(messageId, state);
+        
+        // Reinicia o estado para a nova resposta
+        state = undefined;
+      }
+    }
+
     if (!state) {
       state = {
         position: 0,
@@ -281,6 +293,51 @@ export class StreamingMessageParser {
 
   reset() {
     this.#messages.clear();
+  }
+
+  #detectNewConversationStart(input: string): boolean {
+    // Verifica padrões que indicam início de nova resposta no meio de uma resposta existente
+    const trimmedInput = input.trim();
+    
+    // Padrões comuns de início de resposta em português
+    const conversationStarters = /^(Vamos|Claro|Certo|Agora|Aqui|Pronto|Ok|Sim)/i;
+    
+    // Verifica se a string começa com algum desses padrões
+    return conversationStarters.test(trimmedInput);
+  }
+
+  #forciblyCloseOpenTags(messageId: string, state: MessageState): void {
+    logger.warn('Forçando fechamento de tags abertas devido a detecção de nova resposta');
+    
+    // Se estiver dentro de uma ação, fecha a ação com status de incompleta
+    if (state.insideAction && state.currentArtifact) {
+      const currentAction = state.currentAction as BoltAction;
+      
+      // Adiciona uma marcação ao conteúdo para indicar que foi interrompido
+      if (currentAction.type === 'file') {
+        currentAction.content += '\n\n/* AVISO: Este arquivo foi gerado de forma incompleta devido a uma interrupção na resposta */\n';
+      }
+      
+      this._options.callbacks?.onActionClose?.({
+        artifactId: state.currentArtifact.id,
+        messageId,
+        actionId: String(state.actionId - 1),
+        action: currentAction
+      });
+      
+      state.insideAction = false;
+    }
+    
+    // Se estiver dentro de um artefato, fecha o artefato
+    if (state.insideArtifact && state.currentArtifact) {
+      this._options.callbacks?.onArtifactClose?.({
+        messageId,
+        ...state.currentArtifact
+      });
+      
+      state.insideArtifact = false;
+      state.currentArtifact = undefined;
+    }
   }
 
   #parseActionTag(input: string, actionOpenIndex: number, actionEndIndex: number) {
