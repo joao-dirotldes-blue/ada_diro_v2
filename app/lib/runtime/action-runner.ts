@@ -302,28 +302,59 @@ export class ActionRunner {
     return resp;
   }
 
+  // Gerar ID de ação consistente baseado na ação
+  #generateActionId(action: ActionState, filePath: string): string {
+    // Usar um hash baseado no caminho do arquivo e timestamp para garantir unicidade
+    // mas ainda manter consistência para ações relacionadas ao mesmo arquivo
+    const filePathHash = filePath.split('/').pop() || '';
+    const timestamp = new Date().getTime();
+    
+    // Usar Object.keys() para encontrar o ID nos mapas de ações
+    const existingActionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action);
+    
+    // Se já temos um ID na store, usar ele; caso contrário, gerar um novo
+    return existingActionId || `file_${filePathHash}_${timestamp}`;
+  }
+
   // Método para verificar se uma ação é continuação de outra
   #isFileContinuation(filePath: string, actionId: string, content: string): { isContinuation: boolean; previousActionId?: string } {
     const prevAction = this.#fileActions.get(filePath);
     
     // Verificar se existe uma ação recente para o mesmo arquivo
     if (prevAction && prevAction.actionId !== actionId) {
-      // Verificar tempo - se for dentro de um período razoável (30 segundos)
+      // Verificar tempo - se for dentro de um período razoável (2 minutos)
       const timeSinceLastAction = Date.now() - prevAction.timestamp;
-      const isRecentAction = timeSinceLastAction < 30000; // 30 segundos
+      const isRecentAction = timeSinceLastAction < 120000; // 2 minutos
+      
+      logger.debug(`Checking continuation for ${filePath}: previous action ${prevAction.actionId}, current ${actionId}, timeSince: ${timeSinceLastAction}ms, complete: ${prevAction.complete}`);
       
       // Se a ação anterior não estiver marcada como completa, é provavelmente uma continuação
       if (!prevAction.complete && isRecentAction) {
-        logger.info(`Detected continuation for file ${filePath} from action ${prevAction.actionId}`);
+        logger.info(`Detected continuation for file ${filePath} from action ${prevAction.actionId} (incomplete file + recent)`);
         return { isContinuation: true, previousActionId: prevAction.actionId };
       }
       
-      // Também verificar conteúdo para casos especiais
-      if (content.includes('AVISO: Este arquivo foi gerado de forma incompleta') || 
-          content.trim().startsWith('*/') || 
-          (!content.includes('import') && !content.includes('class') && !content.includes('function'))) {
-        // Parece um fragmento de código, provavelmente é uma continuação
-        logger.info(`Detected possible continuation for file ${filePath} based on content`);
+      // Verificar conteúdo para detectar fragmentos de código
+      const fragmentIndicators = [
+        content.includes('AVISO:'),
+        content.includes('/* SERÁ CONTINUADO */'),
+        content.includes('// Continuação'),
+        content.trim().startsWith('*/'),
+        content.trim().startsWith('}'),
+        content.trim().startsWith('</'),
+        !content.includes('import') && !content.includes('export') && 
+        content.includes('{') && !content.includes('}')
+      ];
+      
+      // Se tiver ao menos 2 indicadores de fragmento, considerar continuação
+      if (fragmentIndicators.filter(Boolean).length >= 1) {
+        logger.info(`Detected possible continuation for file ${filePath} based on content patterns`);
+        return { isContinuation: true, previousActionId: prevAction.actionId };
+      }
+      
+      // Verificar se parece ser conclusão para arquivo recente
+      if (isRecentAction && content.length < 500) {
+        logger.info(`Detected possible continuation for file ${filePath} (small content addition to recent file)`);
         return { isContinuation: true, previousActionId: prevAction.actionId };
       }
     }
@@ -365,11 +396,16 @@ export class ActionRunner {
     }
 
     try {
+      // Gerar um ID consistente para esta ação
+      const actionId = this.#generateActionId(action, relativePath);
+      
+      // Log detalhado para depuração
+      logger.debug(`Processing file action for ${relativePath} with actionId: ${actionId}`);
+      
       // Verificar se este arquivo é continuação de um anterior
       const { isContinuation, previousActionId } = this.#isFileContinuation(
         relativePath,
-        // Use o actionId presente no Map de ações em vez de action.id
-        Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '',
+        actionId,
         action.content
       );
       
@@ -405,35 +441,36 @@ export class ActionRunner {
         await webcontainer.fs.writeFile(relativePath, mergedContent);
         logger.info(`Successfully appended continuation to ${relativePath}, content now ${mergedContent.length} chars`);
         
-      // Verificar se este parece ser o conteúdo final do arquivo
-      const isComplete = !action.content.includes('AVISO') && 
-                        !action.content.includes('/* SERÁ CONTINUADO */') &&
-                        action.content.includes('}') || 
-                        action.content.includes('</');
-      
-      // Encontrar o actionId nos mapas de ações
-      const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
-                        
-      this.#registerFileAction(relativePath, actionId, isComplete);
+        // Verificar se este parece ser o conteúdo final do arquivo
+        const isComplete = !action.content.includes('AVISO') && 
+                          !action.content.includes('/* SERÁ CONTINUADO */') &&
+                          (action.content.includes('}') || action.content.includes('</'));
+        
+        // Registrar esta ação com o ID gerado no início da função
+        this.#registerFileAction(relativePath, actionId, isComplete);
       } else if (fileExists) {
         // Arquivo existe, mas não é uma continuação - sobrescrever
         await webcontainer.fs.writeFile(relativePath, action.content);
         logger.debug(`File overwritten ${relativePath}`);
         
-        // Encontrar o actionId nos mapas de ações
-        const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
-        this.#registerFileAction(relativePath, actionId, true);
+        // Avaliar completude de maneira consistente
+        const isComplete = !action.content.includes('AVISO') && 
+                          !action.content.includes('/* SERÁ CONTINUADO */') &&
+                          (action.content.includes('}') || action.content.includes('</'));
+        
+        // Usar o ID gerado no início da função
+        this.#registerFileAction(relativePath, actionId, isComplete);
       } else {
         // Arquivo novo - criar normalmente
         await webcontainer.fs.writeFile(relativePath, action.content);
         logger.debug(`File created ${relativePath}`);
         
-        // Determinar se o arquivo está provavelmente completo
+        // Determinar se o arquivo está provavelmente completo usando os mesmos critérios
         const isComplete = !action.content.includes('AVISO') && 
-                           !action.content.includes('/* SERÁ CONTINUADO */');
+                         !action.content.includes('/* SERÁ CONTINUADO */') &&
+                         (action.content.includes('}') || action.content.includes('</'));
         
-        // Encontrar o actionId nos mapas de ações
-        const actionId = Object.keys(this.actions.get()).find(id => this.actions.get()[id] === action) || '';
+        // Usar o ID gerado no início da função
         this.#registerFileAction(relativePath, actionId, isComplete);
       }
     } catch (error) {
