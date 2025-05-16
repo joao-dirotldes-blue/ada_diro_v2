@@ -325,7 +325,41 @@ Here are some examples of correct usage of artifacts:
 </examples>
 `;
 
+// Versão estática para quando não temos informações de estado
 export const CONTINUE_PROMPT = stripIndents`
-  Continue your prior response. IMPORTANT: Immediately begin from where you left off without any interruptions.
-  Do not repeat any content, including artifact and action tags.
+  Continue your prior response. IMPORTANT: Immediately begin from where you left off.
+  If you were in the middle of an artifact or action block, continue it with the appropriate structure.
+  Remember to properly close any open tags when you complete them.
 `;
+
+// Versão dinâmica que será gerada com base no estado do parser
+export function getDynamicContinuePrompt(parserState: {
+  insideArtifact: boolean;
+  insideAction: boolean;
+  currentArtifact?: { id: string; title: string };
+  currentAction?: { type: string; filePath?: string };
+}) {
+  if (parserState.insideArtifact) {
+    if (parserState.insideAction) {
+      const actionType = parserState.currentAction?.type || 'unknown';
+      const filePath = parserState.currentAction?.filePath ? ` para o arquivo ${parserState.currentAction.filePath}` : '';
+      
+      return stripIndents`
+        Continue sua resposta anterior. IMPORTANTE: Você estava no meio da criação de conteúdo dentro de uma tag <boltAction type="${actionType}">${filePath}.
+        Continue escrevendo o conteúdo. Quando terminar, lembre-se de fechar corretamente as tags com </boltAction> e depois </boltArtifact>.
+        NÃO comece uma nova conversa ou explicação até ter fechado corretamente todas as tags abertas.
+      `;
+    }
+    
+    const artifactId = parserState.currentArtifact?.id || 'unknown';
+    const artifactTitle = parserState.currentArtifact?.title || 'unknown';
+    
+    return stripIndents`
+      Continue sua resposta anterior. IMPORTANTE: Você estava no meio de um <boltArtifact id="${artifactId}" title="${artifactTitle}">.
+      Continue criando ações dentro deste artefato. Quando terminar, lembre-se de fechar a tag com </boltArtifact>.
+      NÃO comece uma nova conversa ou explicação até ter fechado corretamente todas as tags abertas.
+    `;
+  }
+  
+  return CONTINUE_PROMPT;
+}

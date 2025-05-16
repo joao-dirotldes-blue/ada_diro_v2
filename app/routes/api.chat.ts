@@ -1,7 +1,8 @@
 import { type ActionFunctionArgs } from '@remix-run/cloudflare';
 import { createDataStream, generateId } from 'ai';
 import { MAX_RESPONSE_SEGMENTS, MAX_TOKENS, type FileMap } from '~/lib/.server/llm/constants';
-import { CONTINUE_PROMPT } from '~/lib/common/prompts/prompts';
+import { CONTINUE_PROMPT, getDynamicContinuePrompt } from '~/lib/common/prompts/prompts';
+import { StreamingMessageParser } from '~/lib/runtime/message-parser';
 import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
 import SwitchableStream from '~/lib/.server/llm/switchable-stream';
 import type { IProviderSetting } from '~/types/model';
@@ -232,10 +233,21 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             const lastUserMessage = messages.filter((x) => x.role == 'user').slice(-1)[0];
             const { model, provider } = extractPropertiesFromMessage(lastUserMessage);
             messages.push({ id: generateId(), role: 'assistant', content });
+            
+            // Obter o estado do parser para gerar um prompt de continuação específico
+            const messageParser = new StreamingMessageParser();
+            
+            // Use a última ID de mensagem de assistente para obter o estado do parser
+            const lastAssistantMessageId = generateId();
+            const parserState = messageParser.getParserState(lastAssistantMessageId);
+            
+            // Gerar o prompt de continuação baseado no estado do parser
+            const continuePrompt = getDynamicContinuePrompt(parserState);
+            
             messages.push({
               id: generateId(),
               role: 'user',
-              content: `[Model: ${model}]\n\n[Provider: ${provider}]\n\n${CONTINUE_PROMPT}`,
+              content: `[Model: ${model}]\n\n[Provider: ${provider}]\n\n${continuePrompt}`,
             });
 
             const result = await streamText({

@@ -72,6 +72,25 @@ export class StreamingMessageParser {
   #messages = new Map<string, MessageState>();
 
   constructor(private _options: StreamingMessageParserOptions = {}) {}
+  
+  // Método para obter o estado atual do parser para um messageId específico
+  getParserState(messageId: string) {
+    const state = this.#messages.get(messageId);
+    
+    if (!state) {
+      return {
+        insideArtifact: false,
+        insideAction: false,
+      };
+    }
+    
+    return {
+      insideArtifact: state.insideArtifact,
+      insideAction: state.insideAction,
+      currentArtifact: state.currentArtifact,
+      currentAction: state.currentAction as { type: string; filePath?: string },
+    };
+  }
 
   parse(messageId: string, input: string) {
     let state = this.#messages.get(messageId);
