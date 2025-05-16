@@ -232,14 +232,36 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
 
             const lastUserMessage = messages.filter((x) => x.role == 'user').slice(-1)[0];
             const { model, provider } = extractPropertiesFromMessage(lastUserMessage);
-            messages.push({ id: generateId(), role: 'assistant', content });
             
-            // Obter o estado do parser para gerar um prompt de continuação específico
-            const messageParser = new StreamingMessageParser();
+            // Criar a mensagem do assistente com um ID fixo para podermos referenciar depois
+            const assistantMsgId = `assistant-${Date.now()}`;
+            messages.push({ id: assistantMsgId, role: 'assistant', content });
             
-            // Use a última ID de mensagem de assistente para obter o estado do parser
-            const lastAssistantMessageId = generateId();
-            const parserState = messageParser.getParserState(lastAssistantMessageId);
+            // Processar explicitamente o conteúdo para obter o estado do parser
+            const messageParser = new StreamingMessageParser({
+              callbacks: {
+                onArtifactOpen: (data) => {
+                  logger.debug(`[Parser Debug] Artifact opened: ${data.id}, ${data.title}`);
+                },
+                onActionOpen: (data) => {
+                  logger.debug(`[Parser Debug] Action opened: ${data.action.type}, filePath: ${(data.action as any).filePath || 'N/A'}`);
+                },
+                onActionClose: (data) => {
+                  logger.debug(`[Parser Debug] Action closed: ${data.action.type}`);
+                },
+                onArtifactClose: (data) => {
+                  logger.debug(`[Parser Debug] Artifact closed: ${data.id}`);
+                }
+              }
+            });
+            
+            // Processar explicitamente o conteúdo para garantir que o parser tenha estado
+            messageParser.parse(assistantMsgId, content);
+            
+            // Agora obtemos o estado com base no ID que acabamos de processar
+            const parserState = messageParser.getParserState(assistantMsgId);
+            
+            logger.info(`[Parser State] Inside artifact: ${parserState.insideArtifact}, Inside action: ${parserState.insideAction}, Action type: ${parserState.currentAction?.type || 'N/A'}`);
             
             // Gerar o prompt de continuação baseado no estado do parser
             const continuePrompt = getDynamicContinuePrompt(parserState);

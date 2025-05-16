@@ -345,9 +345,15 @@ export function getDynamicContinuePrompt(parserState: {
       const filePath = parserState.currentAction?.filePath ? ` para o arquivo ${parserState.currentAction.filePath}` : '';
       
       return stripIndents`
-        Continue sua resposta anterior. IMPORTANTE: Você estava no meio da criação de conteúdo dentro de uma tag <boltAction type="${actionType}">${filePath}.
-        Continue escrevendo o conteúdo. Quando terminar, lembre-se de fechar corretamente as tags com </boltAction> e depois </boltArtifact>.
-        NÃO comece uma nova conversa ou explicação até ter fechado corretamente todas as tags abertas.
+        IMPORTANTE: Você estava no meio da criação de conteúdo dentro de uma tag <boltAction type="${actionType}">${filePath} quando foi interrompido devido ao limite de tokens.
+        
+        Continue EXATAMENTE de onde parou, mantendo o mesmo contexto. NÃO repita nenhum conteúdo que já foi gerado.
+        
+        Quando terminar, lembre-se de fechar corretamente as tags com </boltAction> e depois </boltArtifact>.
+        
+        CRÍTICO: NÃO comece uma nova conversa, não introduza novas explicações, e não termine a resposta sem fechar todas as tags abertas.
+        
+        SIMPLESMENTE CONTINUE O CONTEÚDO DO ARQUIVO SEM NENHUMA INTRODUÇÃO OU EXPLICAÇÃO.
       `;
     }
     
