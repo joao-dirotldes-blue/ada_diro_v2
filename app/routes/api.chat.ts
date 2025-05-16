@@ -3,6 +3,9 @@ import { createDataStream, generateId } from 'ai';
 import { MAX_RESPONSE_SEGMENTS, MAX_TOKENS, type FileMap } from '~/lib/.server/llm/constants';
 import { CONTINUE_PROMPT, getDynamicContinuePrompt } from '~/lib/common/prompts/prompts';
 import { StreamingMessageParser } from '~/lib/runtime/message-parser';
+
+// Cache global para manter instâncias do StreamingMessageParser entre chamadas à API
+const parserInstanceCache = new Map<string, StreamingMessageParser>();
 import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
 import SwitchableStream from '~/lib/.server/llm/switchable-stream';
 import type { IProviderSetting } from '~/types/model';
@@ -233,33 +236,45 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             const lastUserMessage = messages.filter((x) => x.role == 'user').slice(-1)[0];
             const { model, provider } = extractPropertiesFromMessage(lastUserMessage);
             
+            // Gerar um ID de chat consistente baseado na conversa atual
+            const chatId = messages.length > 0 ? messages[0].id : 'default-chat';
+            
             // Criar a mensagem do assistente com um ID fixo para podermos referenciar depois
             const assistantMsgId = `assistant-${Date.now()}`;
             messages.push({ id: assistantMsgId, role: 'assistant', content });
             
-            // Processar explicitamente o conteúdo para obter o estado do parser
-            const messageParser = new StreamingMessageParser({
-              callbacks: {
-                onArtifactOpen: (data) => {
-                  logger.debug(`[Parser Debug] Artifact opened: ${data.id}, ${data.title}`);
-                },
-                onActionOpen: (data) => {
-                  logger.debug(`[Parser Debug] Action opened: ${data.action.type}, filePath: ${(data.action as any).filePath || 'N/A'}`);
-                },
-                onActionClose: (data) => {
-                  logger.debug(`[Parser Debug] Action closed: ${data.action.type}`);
-                },
-                onArtifactClose: (data) => {
-                  logger.debug(`[Parser Debug] Artifact closed: ${data.id}`);
+            // Obter ou criar um parser para este chat do cache global
+            let messageParser: StreamingMessageParser;
+            if (parserInstanceCache.has(chatId)) {
+              messageParser = parserInstanceCache.get(chatId)!;
+              logger.info(`Using existing parser for chat ${chatId}`);
+            } else {
+              messageParser = new StreamingMessageParser({
+                callbacks: {
+                  onArtifactOpen: (data) => {
+                    logger.debug(`[Parser Debug] Artifact opened: ${data.id}, ${data.title}`);
+                  },
+                  onActionOpen: (data) => {
+                    logger.debug(`[Parser Debug] Action opened: ${data.action.type}, filePath: ${(data.action as any).filePath || 'N/A'}`);
+                  },
+                  onActionClose: (data) => {
+                    logger.debug(`[Parser Debug] Action closed: ${data.action.type}`);
+                  },
+                  onArtifactClose: (data) => {
+                    logger.debug(`[Parser Debug] Artifact closed: ${data.id}`);
+                  }
                 }
-              }
-            });
+              });
+              parserInstanceCache.set(chatId, messageParser);
+              logger.info(`Created new parser for chat ${chatId}`);
+            }
             
             // Processar explicitamente o conteúdo para garantir que o parser tenha estado
             messageParser.parse(assistantMsgId, content);
             
-            // Agora obtemos o estado com base no ID que acabamos de processar
+            // Registrar o estado atual do parser para depuração
             const parserState = messageParser.getParserState(assistantMsgId);
+            logger.info(`[Parser State antes da continuação] Inside artifact: ${parserState.insideArtifact}, Inside action: ${parserState.insideAction}, Action type: ${parserState.currentAction?.type || 'N/A'}`);
             
             logger.info(`[Parser State] Inside artifact: ${parserState.insideArtifact}, Inside action: ${parserState.insideAction}, Action type: ${parserState.currentAction?.type || 'N/A'}`);
             
@@ -311,10 +326,41 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           message: 'Generating Response',
         } satisfies ProgressAnnotation);
 
+        // Inicializar o parser para a primeira chamada também
+        const chatId = messages.length > 0 ? messages[0].id : 'default-chat';
+        
+        // Criar ou recuperar o parser para este chat
+        if (!parserInstanceCache.has(chatId)) {
+          const initialParser = new StreamingMessageParser({
+            callbacks: {
+              onArtifactOpen: (data) => {
+                logger.debug(`[Parser Debug] Artifact opened: ${data.id}, ${data.title}`);
+              },
+              onActionOpen: (data) => {
+                logger.debug(`[Parser Debug] Action opened: ${data.action.type}, filePath: ${(data.action as any).filePath || 'N/A'}`);
+              },
+              onActionClose: (data) => {
+                logger.debug(`[Parser Debug] Action closed: ${data.action.type}`);
+              },
+              onArtifactClose: (data) => {
+                logger.debug(`[Parser Debug] Artifact closed: ${data.id}`);
+              }
+            }
+          });
+          parserInstanceCache.set(chatId, initialParser);
+          logger.info(`Initialized parser for new chat ${chatId}`);
+        }
+        
+        // Modificar as opções para incluir o ID da conversa 
+        const enhancedOptions: StreamingOptions = {
+          ...options,
+          chatId: chatId, // Passar o ID da conversa para permitir acesso ao parser correto
+        };
+        
         const result = await streamText({
           messages,
           env: context.cloudflare?.env,
-          options,
+          options: enhancedOptions, // Usar opções melhoradas com chatId
           apiKeys,
           files,
           providerSettings,

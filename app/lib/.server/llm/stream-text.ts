@@ -20,6 +20,7 @@ export interface StreamingOptions extends Omit<Parameters<typeof _streamText>[0]
       supabaseUrl?: string;
     };
   };
+  chatId?: string; // Identificador da conversa para persistência de estado
 }
 
 const logger = createScopedLogger('stream-text');
