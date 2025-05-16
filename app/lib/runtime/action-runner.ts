@@ -322,8 +322,37 @@ export class ActionRunner {
     }
 
     try {
-      await webcontainer.fs.writeFile(relativePath, action.content);
-      logger.debug(`File written ${relativePath}`);
+      // Verificar se o arquivo já existe
+      let existingContent = '';
+      try {
+        existingContent = await webcontainer.fs.readFile(relativePath, 'utf-8');
+        logger.debug(`File ${relativePath} exists, checking if continuation`);
+      } catch (error) {
+        // Arquivo não existe ainda, não precisa fazer nada especial
+        logger.debug(`File ${relativePath} does not exist yet, creating new`);
+      }
+
+      // Se o arquivo já existir e tiver conteúdo, é uma possível continuação
+      if (existingContent && action.content) {
+        // Verificar se é uma continuação (em caso de fragmentação devido a limite de tokens)
+        if (existingContent.endsWith('*/\n') || 
+            action.content.includes('AVISO: Este arquivo foi gerado de forma incompleta')) {
+          // É uma continuação, remover o aviso do arquivo anterior se existir
+          const cleanedContent = existingContent.replace(/\/\* AVISO: Este arquivo foi gerado de forma incompleta.*\*\/\n?/g, '');
+          
+          // Escrever o conteúdo mesclado
+          await webcontainer.fs.writeFile(relativePath, cleanedContent + action.content);
+          logger.info(`File continued/appended ${relativePath}`);
+        } else {
+          // Não é uma continuação, sobrescrever normalmente
+          await webcontainer.fs.writeFile(relativePath, action.content);
+          logger.debug(`File overwritten ${relativePath}`);
+        }
+      } else {
+        // Arquivo não existe ou está vazio, escrever normalmente
+        await webcontainer.fs.writeFile(relativePath, action.content);
+        logger.debug(`File written ${relativePath}`);
+      }
     } catch (error) {
       logger.error('Failed to write file\n\n', error);
     }
