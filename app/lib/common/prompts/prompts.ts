@@ -138,6 +138,48 @@ You are Ada, an expert AI assistant and exceptional senior software developer wi
   Only after completing this review should you proceed with executing or suggesting the execution of code. If issues are found, fix them before proceeding.
 </code_review_instructions>
 
+<code_continuation_rules>
+  When generating code inside a &lt;boltAction&gt; tag:
+  
+  1. NEVER start code with introductory phrases like "Let's", "Certainly", "Now", etc.
+  
+  2. If an interruption occurs in the middle of a file:
+     - Continue the code immediately without any introductory text
+     - Maintain the same indentation and style of the previous code
+     - Don't repeat code already written, simply continue from where you left off
+  
+  3. Examples:
+     CORRECT:
+     
+     // Interrupted here
+     function process() {
+       const data =
+     
+     // Continuation (without introductory text)
+       fetchData();
+       return data.map(item => item.value);
+     }
+     
+     
+     INCORRECT:
+     
+     // Interrupted here
+     function process() {
+       const data =
+     
+     // Continuation with introductory text (WRONG)
+     Let's continue the function:
+       fetchData();
+       return data.map(item => item.value);
+     }
+     
+  
+  4. When approaching the token limit:
+     - Try to finish the current function/method/block if possible
+     - If not possible, end at a logical break point (e.g., end of a statement)
+     - Add a brief trailing comment /* Continued in next response */ if appropriate
+</code_continuation_rules>
+
 <artifact_info>
   Ada creates a SINGLE, comprehensive artifact for each project. The artifact contains all necessary steps and components, including:
 
@@ -342,18 +384,33 @@ export function getDynamicContinuePrompt(parserState: {
   if (parserState.insideArtifact) {
     if (parserState.insideAction) {
       const actionType = parserState.currentAction?.type || 'unknown';
-      const filePath = parserState.currentAction?.filePath ? ` para o arquivo ${parserState.currentAction.filePath}` : '';
+      const filePath = parserState.currentAction?.filePath ? ` for file ${parserState.currentAction.filePath}` : '';
+      
+      if (actionType === 'file') {
+        return stripIndents`
+          IMPORTANT: You were interrupted while writing code${filePath} due to token limit.
+          
+          CONTINUE EXACTLY where you left off. DO NOT repeat any content already generated.
+          
+          CRITICAL INSTRUCTIONS:
+          - DO NOT add any introductory phrases like "Let's", "Now", "Certainly", etc.
+          - DO NOT add any explanations, comments, or narration
+          - SIMPLY CONTINUE THE CODE DIRECTLY as if there was no interruption
+          - Maintain the same indentation and style as before
+          - When finished, remember to close the tags properly with </boltAction> and then </boltArtifact>
+          
+          JUST CONTINUE THE CODE WITHOUT ANY INTRODUCTION OR EXPLANATION.
+        `;
+      }
       
       return stripIndents`
-        IMPORTANTE: Você estava no meio da criação de conteúdo dentro de uma tag <boltAction type="${actionType}">${filePath} quando foi interrompido devido ao limite de tokens.
+        IMPORTANT: You were interrupted while creating content inside a <boltAction type="${actionType}">${filePath} due to token limit.
         
-        Continue EXATAMENTE de onde parou, mantendo o mesmo contexto. NÃO repita nenhum conteúdo que já foi gerado.
+        CONTINUE EXACTLY where you left off, maintaining the same context. DO NOT repeat any content already generated.
         
-        Quando terminar, lembre-se de fechar corretamente as tags com </boltAction> e depois </boltArtifact>.
+        When finished, remember to close the tags properly with </boltAction> and then </boltArtifact>.
         
-        CRÍTICO: NÃO comece uma nova conversa, não introduza novas explicações, e não termine a resposta sem fechar todas as tags abertas.
-        
-        SIMPLESMENTE CONTINUE O CONTEÚDO DO ARQUIVO SEM NENHUMA INTRODUÇÃO OU EXPLICAÇÃO.
+        CRITICAL: DO NOT start a new conversation, do not introduce new explanations, and do not end the response without closing all open tags.
       `;
     }
     
@@ -361,9 +418,9 @@ export function getDynamicContinuePrompt(parserState: {
     const artifactTitle = parserState.currentArtifact?.title || 'unknown';
     
     return stripIndents`
-      Continue sua resposta anterior. IMPORTANTE: Você estava no meio de um <boltArtifact id="${artifactId}" title="${artifactTitle}">.
-      Continue criando ações dentro deste artefato. Quando terminar, lembre-se de fechar a tag com </boltArtifact>.
-      NÃO comece uma nova conversa ou explicação até ter fechado corretamente todas as tags abertas.
+      Continue your previous response. IMPORTANT: You were in the middle of a <boltArtifact id="${artifactId}" title="${artifactTitle}">.
+      Continue creating actions within this artifact. When finished, remember to close the tag with </boltArtifact>.
+      DO NOT start a new conversation or explanation until you have properly closed all open tags.
     `;
   }
   

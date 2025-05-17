@@ -314,15 +314,40 @@ export class StreamingMessageParser {
     this.#messages.clear();
   }
 
+  // Check if we're in a code context
+  #isInCodeContext(input: string): boolean {
+    const codeIndicators = [
+      /^\s*function/i, /^\s*class/i, /^\s*const/i, /^\s*let/i, 
+      /^\s*var/i, /^\s*import/i, /^\s*export/i, /^\s*return/i,
+      /^\s*if\s*\(/i, /^\s*for\s*\(/i, /^\s*while\s*\(/i,
+      /^\s*switch\s*\(/i, /^\s*case\s+/i, /^\s*default:/i,
+      /^\s*[{}\[\]()<>\/;]/
+    ];
+    
+    return codeIndicators.some(pattern => pattern.test(input));
+  }
+
   #detectNewConversationStart(input: string): boolean {
     // Verifica padrões que indicam início de nova resposta no meio de uma resposta existente
     const trimmedInput = input.trim();
     
-    // Padrões comuns de início de resposta em português
-    const conversationStarters = /^(Vamos|Claro|Certo|Agora|Aqui|Pronto|Ok|Sim)/i;
+    // Se estivermos em contexto de código, não considerar como nova conversa
+    if (this.#isInCodeContext(trimmedInput)) {
+      logger.debug('Detected code context, not treating as new conversation start');
+      return false;
+    }
     
-    // Verifica se a string começa com algum desses padrões
-    return conversationStarters.test(trimmedInput);
+    // Padrões mais específicos e restritivos de início de resposta em português
+    const conversationStarters = /^(Vamos\s+começar|Claro,\s+vou|Certo,\s+aqui\s+está|Agora\s+vou|Pronto,\s+aqui|Entendi,\s+vou)/i;
+    
+    // Verifica se a string começa com algum desses padrões mais específicos
+    const isNewConversation = conversationStarters.test(trimmedInput);
+    
+    if (isNewConversation) {
+      logger.debug(`Detected new conversation start: "${trimmedInput.substring(0, 20)}..."`);
+    }
+    
+    return isNewConversation;
   }
 
   #forciblyCloseOpenTags(messageId: string, state: MessageState): void {
