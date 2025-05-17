@@ -387,24 +387,30 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     }).pipeThrough(
       new TransformStream({
         transform: (chunk, controller) => {
+          // Inicializa lastChunk se for a primeira execução
           if (!lastChunk) {
             lastChunk = ' ';
           }
 
+          // Detecta início e fim de seções de pensamento (thought)
           if (typeof chunk === 'string') {
+            // Se estamos começando uma seção de pensamento
             if (chunk.startsWith('g') && !lastChunk.startsWith('g')) {
               controller.enqueue(encoder.encode(`0: "<div class=\\"__boltThought__\\">"\n`));
             }
 
+            // Se estamos terminando uma seção de pensamento
             if (lastChunk.startsWith('g') && !chunk.startsWith('g')) {
               controller.enqueue(encoder.encode(`0: "</div>\\n"\n`));
             }
           }
 
+          // Guarda o chunk atual para a próxima iteração
           lastChunk = chunk;
 
           let transformedChunk = chunk;
 
+          // Transforma chunks de pensamento (g:) em chunks normais (0:)
           if (typeof chunk === 'string' && chunk.startsWith('g')) {
             let content = chunk.split(':').slice(1).join(':');
 
@@ -413,6 +419,12 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
             }
 
             transformedChunk = `0:${content}\n`;
+          } 
+          // Garante que qualquer chunk que não tenha um prefixo receba um prefixo '0:'
+          else if (typeof chunk === 'string' && !chunk.startsWith('0:') && !chunk.startsWith('1:') && 
+                  !chunk.startsWith('2:') && chunk.trim().length > 0) {
+            transformedChunk = `0:${chunk}\n`;
+            logger.debug(`Fixed unprefixed chunk: ${chunk.substring(0, 30)}...`);
           }
 
           // Convert the string stream to a byte stream
