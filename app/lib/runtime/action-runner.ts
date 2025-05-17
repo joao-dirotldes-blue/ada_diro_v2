@@ -421,6 +421,9 @@ export class ActionRunner {
         logger.debug(`File ${relativePath} does not exist yet, creating new`);
       }
 
+      // Determinar se é um arquivo JSON
+      const isJsonFile = relativePath.endsWith('.json');
+      
       // Determine o comportamento baseado no status do arquivo
       if (fileExists && isContinuation) {
         // É uma continuação confirmada de um arquivo existente
@@ -429,12 +432,95 @@ export class ActionRunner {
         // Remover qualquer aviso de arquivo incompleto se existir
         const cleanedContent = existingContent.replace(/\/\* AVISO: Este arquivo foi gerado de forma incompleta.*\*\/\n?/g, '');
         
-        // Verificar se precisamos juntar com uma quebra de linha
         let mergedContent;
-        if (cleanedContent.endsWith('\n') || action.content.startsWith('\n')) {
-          mergedContent = cleanedContent + action.content;
+        
+        // Tratamento especial para arquivos JSON
+        if (isJsonFile) {
+          try {
+            // Tenta analisar o JSON existente
+            let existingJson: any;
+            try {
+              existingJson = JSON.parse(cleanedContent);
+            } catch (jsonError) {
+              logger.error(`Failed to parse existing JSON in ${relativePath}, will try to repair`);
+              // Tenta reparar removendo tudo após o último } válido
+              const lastValidBrace = cleanedContent.lastIndexOf('}');
+              if (lastValidBrace > 0) {
+                const fixedContent = cleanedContent.substring(0, lastValidBrace + 1);
+                existingJson = JSON.parse(fixedContent);
+                logger.info(`Successfully repaired JSON by truncating at position ${lastValidBrace}`);
+              } else {
+                throw jsonError; // Se não conseguir reparar, propaga o erro
+              }
+            }
+            
+            // Tenta analisar o novo conteúdo como JSON
+            let newContentJson: any;
+            try {
+              // Mesmo processo de reparo para o novo conteúdo
+              const newContent = action.content;
+              const firstValidBrace = newContent.indexOf('{');
+              const lastValidBrace = newContent.lastIndexOf('}');
+              
+              if (firstValidBrace >= 0 && lastValidBrace > firstValidBrace) {
+                const fixedNewContent = newContent.substring(firstValidBrace, lastValidBrace + 1);
+                newContentJson = JSON.parse(fixedNewContent);
+              } else {
+                // Se não tiver estrutura JSON válida, trata como texto comum
+                throw new Error("New content doesn't contain valid JSON structure");
+              }
+            } catch (jsonError) {
+              logger.warn(`Could not parse new content as JSON, will try as text supplement to existing JSON`);
+              
+              // Reparar potencial continuação de JSON
+              // Procura por propriedades soltas no formato "key": "value"
+              const propertyMatches = action.content.match(/"([^"]+)"\s*:\s*([^,}]+)(?:,|\s*})?/g);
+              
+              if (propertyMatches && propertyMatches.length > 0) {
+                // Tenta extrair propriedades e adicioná-las
+                for (const propMatch of propertyMatches) {
+                  try {
+                    // Formata como objeto JSON para parsing
+                    const tempJson = JSON.parse(`{${propMatch.endsWith(',') ? propMatch : propMatch + '}'}`);
+                    const key = Object.keys(tempJson)[0];
+                    existingJson[key] = tempJson[key];
+                    logger.debug(`Added property ${key} to existing JSON`);
+                  } catch (e) {
+                    logger.warn(`Failed to extract property from: ${propMatch}`);
+                  }
+                }
+              } else {
+                // Não há estrutura JSON reconhecível, reverter para concatenação de texto
+                throw jsonError;
+              }
+            }
+            
+            // Mesclar objetos JSON
+            if (newContentJson) {
+              existingJson = { ...existingJson, ...newContentJson };
+              logger.info(`Successfully merged JSON objects for ${relativePath}`);
+            }
+            
+            // Converter de volta para string formatada
+            mergedContent = JSON.stringify(existingJson, null, 2);
+          } catch (error) {
+            logger.error(`JSON processing failed for ${relativePath}, falling back to text concatenation: ${error}`);
+            
+            // Fallback para concatenação de texto
+            if (cleanedContent.endsWith('\n') || action.content.startsWith('\n')) {
+              mergedContent = cleanedContent + action.content;
+            } else {
+              mergedContent = cleanedContent + '\n' + action.content;
+            }
+          }
         } else {
-          mergedContent = cleanedContent + '\n' + action.content;
+          // Arquivos que não são JSON - comportamento normal de concatenação
+          // Verificar se precisamos juntar com uma quebra de linha
+          if (cleanedContent.endsWith('\n') || action.content.startsWith('\n')) {
+            mergedContent = cleanedContent + action.content;
+          } else {
+            mergedContent = cleanedContent + '\n' + action.content;
+          }
         }
         
         // Escrever o conteúdo mesclado

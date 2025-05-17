@@ -148,7 +148,7 @@ You are Ada, an expert AI assistant and exceptional senior software developer wi
      - Maintain the same indentation and style of the previous code
      - Don't repeat code already written, simply continue from where you left off
   
-  3. Examples:
+  3. Examples for JavaScript/TypeScript code:
      CORRECT:
      
      // Interrupted here
@@ -174,10 +174,53 @@ You are Ada, an expert AI assistant and exceptional senior software developer wi
      }
      
   
-  4. When approaching the token limit:
+  4. CRITICAL: Special handling for JSON files (like package.json):
+     - JSON files must contain exactly ONE complete JSON object
+     - NEVER write multiple JSON objects in the same file
+     - If interrupted while writing a JSON file:
+       a. DO NOT start a new JSON object
+       b. DO NOT repeat the opening brace { 
+       c. ONLY continue with the remaining properties
+     
+     Example for JSON:
+     CORRECT:
+     
+     // Interrupted here with partial package.json
+     {
+       "name": "my-app",
+       "version": "1.0.0",
+     
+     // Continuation (just remaining properties)
+       "description": "My application",
+       "main": "index.js",
+       "scripts": {
+         "start": "node index.js"
+       }
+     }
+     
+     
+     INCORRECT:
+     
+     // Interrupted here with partial package.json
+     {
+       "name": "my-app",
+       "version": "1.0.0",
+     
+     // New JSON object (WRONG)
+     {
+       "description": "My application",
+       "main": "index.js",
+       "scripts": {
+         "start": "node index.js"
+       }
+     }
+     
+  
+  5. When approaching the token limit:
      - Try to finish the current function/method/block if possible
      - If not possible, end at a logical break point (e.g., end of a statement)
      - Add a brief trailing comment /* Continued in next response */ if appropriate
+     - For JSON files, try to complete the current property before being interrupted
 </code_continuation_rules>
 
 <artifact_info>
@@ -387,6 +430,25 @@ export function getDynamicContinuePrompt(parserState: {
       const filePath = parserState.currentAction?.filePath ? ` for file ${parserState.currentAction.filePath}` : '';
       
       if (actionType === 'file') {
+        // Special handling for JSON files
+        if (filePath.endsWith('.json')) {
+          return stripIndents`
+            IMPORTANT: You were interrupted while writing a JSON file${filePath} due to token limit.
+            
+            CONTINUE EXACTLY where you left off with JSON properties. DO NOT repeat any content already generated.
+            
+            CRITICAL INSTRUCTIONS:
+            - DO NOT start a new JSON object with "{"
+            - ONLY continue with the remaining properties
+            - JSON files must contain exactly ONE complete JSON object
+            - Maintain proper JSON syntax with correct commas between properties
+            - When finished, remember to close the JSON object with "}" and then close tags with </boltAction> and </boltArtifact>
+            
+            JUST CONTINUE THE JSON PROPERTIES WITHOUT ANY INTRODUCTION OR EXPLANATION.
+          `;
+        }
+        
+        // Default handling for non-JSON code files
         return stripIndents`
           IMPORTANT: You were interrupted while writing code${filePath} due to token limit.
           
